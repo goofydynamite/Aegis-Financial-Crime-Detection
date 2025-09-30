@@ -1,0 +1,24 @@
+Aegis-Financial-Crime-Detection/
+│
+├── data/
+│   ├── raw/
+│   │   └── simulated_transactions.csv
+│   └── processed/
+│       └── enriched_transactions_for_dashboard.csv
+│
+├── dashboards/
+│   ├── Aegis_Dashboard.pbix
+│   └── dashboard_screenshot.png
+│
+├── notebooks/
+│   ├── 01_Data_Simulation.ipynb
+│   └── 02_Analysis_and_Modeling.ipynb
+│
+├── src/
+│   ├── __init__.py
+│   ├── data_processing.py
+│   └── modeling.py
+│
+├── .gitignore
+├── README.md
+└── requirements.txt
