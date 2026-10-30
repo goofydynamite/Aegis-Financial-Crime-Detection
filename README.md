@@ -1,144 +1,119 @@
-Project Aegis: A Machine Learning Approach to Financial Crime Detection
+# Project Aegis: Anti-Money-Laundering Detection on Transaction Networks
 
-![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![Pandas](https://img.shields.io/badge/Pandas-150458?style=for-the-badge&logo=pandas&logoColor=white)
-![Scikit-learn](https://img.shields.io/badge/scikit--learn-F7931E?style=for-the-badge&logo=scikit-learn&logoColor=white)
-![Power BI](https://img.shields.io/badge/Power%20BI-F2C811?style=for-the-badge&logo=powerbi&logoColor=black)
+Aegis ranks financial transactions by money-laundering risk so an investigation team
+can review the riskiest first. It is trained and evaluated on the
+[IBM AML dataset](https://www.kaggle.com/datasets/ealtman2019/ibm-transactions-for-anti-money-laundering-aml)
+(Altman et al., *Realistic Synthetic Financial Transactions for Anti-Money Laundering
+Models*, NeurIPS 2023): 6.9 million transactions, 706k accounts, 0.05% laundering.
 
+## Results (LI-Small, chronological hold-out)
 
-## Project Goal
-The goal of Project Aegis is to develop a proactive, data-driven system for identifying and analyzing sophisticated financial crime networks. This project moves beyond simple, rule-based alerts to a machine learning model that can detect anomalous patterns in a large volume of transaction data, ultimately providing actionable intelligence to investigators through an interactive dashboard.
+Test period 8–10 Sept 2022: 1,384,828 transactions, 791 laundering (1 in 1,750).
 
-##  The Problem
-Financial institutions face the immense challenge of combating crimes like money laundering, which involve complex networks of transactions designed to obscure the source of illicit funds. Traditional methods often rely on static rules that are easily circumvented by sophisticated criminals. This creates a need for intelligent systems that can learn normal behavior and flag suspicious deviations at a network level, reducing false positives and allowing investigators to focus on the highest-priority threats.
+| Model | PR-AUC | ROC-AUC | Precision@100 | Recall@1000 | Recall@5000 |
+|---|---|---|---|---|---|
+| Legacy prototype (Isolation Forest, per-transaction features) | 0.0005 | 0.456 | 0.02 | 0.004 | 0.006 |
+| Isolation Forest, behavioural + network features | 0.0015 | 0.778 | 0.00 | 0.000 | 0.009 |
+| **LightGBM, behavioural + network features** | **0.233** | **0.966** | **0.95** | **0.259** | **0.448** |
 
----
+- **95 of the top 100 alerts are laundering.** 100 random alerts would contain about 0.06.
+- The top 5,000 alerts (0.36% of transactions) contain 45% of all laundering.
+- Of transactions linked to a known typology, 85% land in the top 5,000. Recall per
+  typology ranges from 95% (cycles) to 63% (stacks), in
+  [reports/summary.md](reports/summary.md).
+- The legacy approach from the first version of this project performs no better than random
+  on real-scale data: single-transaction features cannot see network patterns.
 
-##  Key Features
-- **Realistic Data Simulation**: A robust Python script generates a dataset of over 20,000 transactions across 1,000 accounts, with engineered crime patterns including **Layering**, **Smurfing (Structuring)**, and **Rapid Pass-Through** schemes.
-- **Rich Feature Engineering**: The system enriches raw data with crucial risk indicators such as transaction velocity, country risk flags (`is_foreign_transaction`), and transaction types.
-- **Unsupervised Anomaly Detection**: An **Isolation Forest** model is trained to identify outliers. This unsupervised approach is ideal as it doesn't require pre-labeled fraud data and can adapt to new, unseen criminal patterns.
-- **Performance Validation**: The model's effectiveness is rigorously measured using a confusion matrix (True Positives, False Positives), and a **Model Precision** score is calculated to quantify the reliability of its alerts.
-- **Interactive SOC Dashboard**: A multi-page Power BI report serves as a Security Operations Center (SOC) dashboard, allowing analysts to move from a high-level overview to a deep-dive network graph investigation of specific alerts.
+Accuracy is not reported: predicting "not laundering" for everything scores 99.95%.
 
----
+## How it works
 
-## 📊 Final Dashboard
-The final output is a comprehensive, multi-page Power BI dashboard designed for financial crime investigators.
+```
+raw CSV ──ingest──▶ transactions.parquet ──features──▶ features.parquet ──train──▶ model + reports
+```
 
+1. **Ingest** ([src/aegis/data.py](src/aegis/data.py)): typed load, deduplication, currency
+   conversion to USD (rates estimated from the data's own cross-currency payments),
+   integer account IDs, typology labels joined from `*_Patterns.txt`, and removal of the
+   dataset's near-empty trailing days (see *Data caveats*).
+2. **Features** ([src/aegis/features.py](src/aegis/features.py)): 26 features, each
+   computed only from the current and earlier transactions, so the same code can score a
+   live stream. A test enforces this.
+   - *Sender behaviour*: payment count, 24h velocity and volume, distinct receivers so far,
+     time since previous payment, amount relative to the sender's own average.
+   - *Receiver behaviour*: the same, from the incoming side (fan-in).
+   - *Flow-through*: time since the sender last received money and the ratio of this
+     payment to that inflow. These catch pass-through and stack layering.
+   - *Hub signals*: how many distinct accounts paid the sender, and how many the receiver
+     has paid (gather and scatter nodes).
+3. **Train and evaluate** ([src/aegis/model.py](src/aegis/model.py),
+   [src/aegis/evaluate.py](src/aegis/evaluate.py)): 60/20/20 chronological split, LightGBM
+   with early stopping on validation PR-AUC, two Isolation Forest baselines, and
+   precision/recall@k metrics that match how a fixed-size investigation team works.
 
+## Project structure
 
----
+```
+aegis/
+├── config.yaml              # dataset, split, model and evaluation settings
+├── src/aegis/
+│   ├── __main__.py          # CLI: python -m aegis {ingest,features,train,all}
+│   ├── config.py
+│   ├── data.py              # loading, cleaning, currency conversion, typology labels
+│   ├── features.py          # leakage-safe behavioural and network features
+│   ├── model.py             # time split, LightGBM, Isolation Forest
+│   └── evaluate.py          # PR-AUC, precision/recall@k, per-typology recall
+├── tests/                   # pytest suite, including a no-look-ahead test
+├── data/raw/                # downloaded files (git-ignored)
+├── data/processed/          # Parquet outputs (git-ignored)
+├── models/                  # trained models (git-ignored)
+└── reports/                 # metrics.json, summary.md, feature_importance.csv, top_alerts.csv
+```
 
-## ⚙️ System Architecture
-The project follows a standard analytical pipeline, moving from data generation to final visualization.
-Technical Deep Dive: The Methodology
+## Setup
 
+```bash
+python -m venv .venv
+.venv\Scripts\activate          # macOS/Linux: source .venv/bin/activate
+pip install -e ".[dev]"
+```
 
+Download `LI-Small_Trans.csv` and `LI-Small_Patterns.txt` into `data/raw/` (see
+[data/raw/README.md](data/raw/README.md)). Then:
 
-1.  **Data Generation**: The foundation of the project is a simulated dataset created with Python's `Faker` library. It includes realistic features like account creation dates, transaction types, and merchant details. Crucially, specific crime typologies are programmatically injected:
+```bash
+python -m aegis all       # ~12 minutes on a laptop; or run ingest / features / train separately
+pytest
+```
 
-    - **Smurfing**: One account makes numerous small deposits into many other accounts.
+To use another dataset version, change `data.dataset` in `config.yaml` (e.g. `HI-Small`).
 
-    - **Layering**: Funds are passed through a circular chain of accounts in rapid succession.
+## Outputs
 
-    - **Pass-Through**: A large sum is deposited from a high-risk source and immediately transferred out.
+| File | Contents |
+|---|---|
+| `reports/summary.md` | Results table, recall by typology, top features |
+| `reports/metrics.json` | All metrics and split details, machine-readable |
+| `reports/top_alerts.csv` | The 1,000 highest-risk test transactions with accounts and scores, for a dashboard |
+| `reports/feature_importance.csv` | LightGBM gain per feature |
+| `models/LI-Small_lightgbm.txt` | Trained model |
 
+## Data caveats
 
+- **Sparse tail.** After 10 Sept the raw file has only 223 transactions, 61% of them
+  laundering (attempts that run past the simulation end). Left in, they let a model learn
+  "a quiet period means laundering" and inflate the test PR-AUC from 0.23 to 0.34. Ingest
+  drops trailing days with under 1% of a median day's volume (`data.min_day_share`).
+- **Typology coverage.** Only about a quarter of laundering transactions appear in the
+  patterns file. Per-typology recall uses only those, which is why it is higher than overall recall.
+- **Same-minute ordering.** Timestamps are per minute. Rolling windows can include other
+  transactions from the same minute; look-ups of an account's previous inflow or outflow exclude them.
 
-2.  **Feature Engineering**: Raw data is insufficient for effective modeling. New features were created in Power Query and Python to provide context:
+## Roadmap
 
-    - `Crime_Type`: A categorical label derived from the known `transaction_id`s of engineered patterns.
-
-    - `Is_Actual_Crime`: A binary "ground truth" column (1/0) used for model validation.
-
-    - *(In a full implementation, features like `account_age`, `avg_transaction_value`, `transaction_frequency` would be created here).*
-
-
-
-3.  **Machine Learning Model**: An **Isolation Forest** was chosen for anomaly detection.
-
-    - **Why?** It's an unsupervised model, which is perfect for this problem as we want to find *anomalies* of all kinds, not just the patterns we already know. It works by "isolating" outliers in the data, making it computationally efficient and effective.
-
-    - The model assigns an `anomaly_score` to each transaction. The lower the score, the more anomalous the transaction.
-
-
-4.  **Model Performance**: To validate the model, DAX measures were created in Power BI to build a confusion matrix based on a defined risk threshold (e.g., `anomaly_score < 0.1`).
-
-
-| Metric          | Value        | Description                                                 |
-| --------------- | ------------ | ----------------------------------------------------------- |
-| **True Positives** | *[Your TP #]* | The model correctly identified a known criminal transaction.    |
-| **False Positives** | *[Your FP #]* | The model incorrectly flagged a normal transaction.         |
-| **Model Precision** | *[Your %]* | Of all the alerts generated, this % were actual crimes.     |
-
-
-Metric	Value	Description
-True Positives	48	The model correctly identified a known criminal transaction.
-False Positives	112	The model incorrectly flagged a normal transaction.
-Model Precision	30.0%	Of all the alerts generated, this % were actual crimes.
-Tech Stack
-- **Data Analysis & Modeling**: Python (Pandas, Scikit-learn, Faker, TA)
-- **Data Transformation**: Power Query (M Language)
-- **Dashboarding & DAX Measures**: Microsoft Power BI
-- **Development Environment**: VS Code, Jupyter Notebook
-
-
-
-
-
-
-
-📂 Repository Structure
-Aegis-Financial-Crime-Detection/
-│
-├── data/
-│   ├── raw/
-│   │   └── simulated_transactions.csv
-│   └── processed/
-│       └── enriched_transactions_for_dashboard.csv
-│
-├── dashboards/
-│   ├── Aegis_Dashboard.pbix
-│   └── dashboard_screenshot.png
-│
-├── notebooks/
-│   ├── 01_Data_Simulation.ipynb
-│   └── 02_Analysis_and_Modeling.ipynb
-│
-├── src/
-│   ├── init.py
-│   ├── data_processing.py
-│   └── modeling.py
-│
-├── .gitignore
-├── README.md
-└── requirements.txt
-
-# 🔧 Setup & Usage
-
-To set up and run this project locally:
-
-1.  **Clone the repository:**
-    ```bash
-    git clone [https://github.com/your-username/Aegis-Financial-Crime-Detection.git](https://github.com/your-username/Aegis-Financial-Crime-Detection.git)
-    cd Aegis-Financial-Crime-Detection
-    ```
-2.  **Create and activate a Python virtual environment:**
-    ```bash
-    python -m venv venv
-    source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
-    ```
-3.  **Install the required dependencies:**
-    ```bash
-s   pip install -r requirements.txt
-    ```
-4.  **Run the analysis:** Open the Jupyter Notebooks in the `notebooks/` directory to explore the data simulation and modeling process.
-5.  **View the dashboard:** Open the `Aegis_Dashboard.pbix` file in the `dashboards/` directory using Power BI Desktop.
-
----
-
-## 🔮 Future Scope
-- **Graph Database Integration**: Migrate the data to a graph database like Neo4j to run powerful graph algorithms (e.g., PageRank, community detection) to find influential launderers and hidden criminal rings.
-- **Real-Time Alerting**: Deploy the model via a FastAPI endpoint and connect it to a streaming platform like Kafka to score transactions in real-time.
-- **Explanatory AI (LLM)**: Integrate an LLM to automatically generate a human-readable "dossier" for each high-risk alert, explaining in natural language why the transaction was flagged based on its features.
+- Graph features over a time window: cycle detection, PageRank, community membership
+- Account-level risk scores and case grouping of related alerts
+- SHAP explanations for each alert
+- Graph neural network (GraphSAGE / GAT) comparison
+- FastAPI scoring service and an investigator dashboard with a network view
+- LLM-written alert summaries generated from the structured evidence only
